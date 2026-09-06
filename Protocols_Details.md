@@ -120,6 +120,7 @@ CFlie|AIR|38|CFlie||||||||NRF24L01|
 [KF606](Protocols_Details.md#KF606---49)||49|KF606|MIG320|ZCZ50||||||NRF24L01|XN297
 [KN](Protocols_Details.md#KN---9)||9|WLTOYS|FEILUN|||||||NRF24L01|
 [Kyosho](Protocols_Details.md#Kyosho---73)||73|FHSS|Hype|||||||A7105|
+[Kyosho RX](Protocols_Details.md#Kyosho-RX---110)||110|Multi|CPPM|||||||A7105|
 [Kyosho2](Protocols_Details.md#Kyosho2---93)||93|KT-17||||||||NRF24L01|
 [Kyosho3](Protocols_Details.md#Kyosho3---98)||98|ASF||||||||CYRF6936|
 [LOLI](Protocols_Details.md#LOLI---82)||82|||||||||NRF24L01|
@@ -380,6 +381,31 @@ CH1|CH2|CH3|CH4|CH5|CH6
 A|E|T|R|CH5|CH6
 
 RX output will match the Hype standard AETR independently of the input configuration AETR, RETA... unless on OpenTX 2.3.3+ you use the "Disable channel mapping" feature on the GUI.
+
+## Kyosho RX - *110*
+The Kyosho receiver protocol turns the module into a Kyosho FHSS/Syncro receiver: it binds to a KT-531P/KT-331 transmitter and forwards the 14 received channels to the radio. It enables master/slave trainning, separate access from 2 different radios to the same model,...
+
+Trainer Mode Master/Multi
+
+Extended limits supported
+
+Low power: enable/disable the LNA stage on the RF component to use depending on the distance with the TX.
+
+Note that the Kyosho Hype sub protocol (*73* sub_protocol *1*) is **not** supported, only FHSS and Syncro are.
+
+CH1|CH2|CH3|CH4|CH5|CH6|CH7|CH8|CH9|CH10|CH11|CH12|CH13|CH14
+---|---|---|---|---|---|---|---|---|----|----|----|----|----
+STEERING|THROTTLE|CH3|CH4|CH5|CH6|CH7|CH8|CH9|CH10|CH11|CH12|CH13|CH14
+
+### Sub_protocol Multi - *0*
+Use the telemetry to send the trainer information to the radio.
+
+### Sub_protocol CPPM - *1*
+Sending trainer channels to FrSky radios through telemetry does not work since the telemetry lines of the internal and external modules are shared (hardware limitation).
+On a STM32 module and with a simple hardware modification, you can go around this limitation using CPPM to send the trainer information to the radio.
+For more information check the [CCPM Hardware Modification](/docs/CPPM_HW_Mod.md) page.
+
+Once your **setup** is **complete** and before enabling the internal module, you **must check the "Disable Telemetry" box** to stop the Multi module from sending any data to the radio and therfore freeing up the line for the internal module.
 
 ## Pelikan - *60*
 Extended limits supported

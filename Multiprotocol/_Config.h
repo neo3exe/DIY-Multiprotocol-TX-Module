@@ -186,6 +186,7 @@
 #define	HUBSAN_A7105_INO
 #define	JOYSWAY_A7105_INO
 #define	KYOSHO_A7105_INO
+#define	KYOSHO_RX_A7105_INO
 #define	PELIKAN_A7105_INO
 #define	WFLY2_A7105_INO
 
@@ -374,6 +375,7 @@
 #define SCANNER_TELEMETRY			// Forward spectrum scanner data to TX
 #define FRSKY_RX_TELEMETRY			// Forward channels data to TX
 #define AFHDS2A_RX_TELEMETRY		// Forward channels data to TX
+#define KYOSHO_RX_TELEMETRY			// Forward channels data to TX
 #define HOTT_FW_TELEMETRY			// Forward received telemetry packets to be decoded by erskyTX and OpenTX
 #define BAYANG_RX_TELEMETRY			// Forward channels data to TX
 
@@ -772,6 +774,8 @@ const PPM_Parameters PPM_prot[14*NBR_BANKS]=	{
 	PROTO_KYOSHO
 		KYOSHO_FHSS
 		KYOSHO_HYPE
+	PROTO_KYOSHO_RX
+		NONE
 	PROTO_KYOSHO2
 		NONE
 	PROTO_KYOSHO3

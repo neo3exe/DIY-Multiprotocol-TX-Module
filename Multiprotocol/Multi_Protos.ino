@@ -91,6 +91,7 @@ const char STR_FRSKYR9[]	="FrSkyR9";
 const char STR_PROPEL[]		="Propel";
 const char STR_SKYARTEC[]	="Skyartc";
 const char STR_KYOSHO[]		="Kyosho";
+const char STR_KYOSHO_RX[]	="KyoshoRX";
 const char STR_KYOSHO2[]	="Kyosho2";
 const char STR_RLINK[]		="RadLink";
 const char STR_REALACC[]	="Realacc";
@@ -413,6 +414,9 @@ const mm_protocol_definition multi_protocols[] = {
 	#endif
 	#if defined(KYOSHO_A7105_INO)
 		{PROTO_KYOSHO,     STR_KYOSHO,    STR_SUBTYPE_KYOSHO,    2, OPTION_NONE,    0, 1, SW_A7105,  KYOSHO_init,     KYOSHO_callback     },
+	#endif
+	#if defined(KYOSHO_RX_A7105_INO)
+		{PROTO_KYOSHO_RX,  STR_KYOSHO_RX, STR_CPPM,       NBR_CPPM, OPTION_NONE,    0, 0, SW_A7105,  KYOSHO_RX_init,  KYOSHO_RX_callback  },
 	#endif
 	#if defined(KYOSHO2_NRF24L01_INO)
 		{PROTO_KYOSHO2,    STR_KYOSHO2,   STR_SUBTYPE_KYOSHO2,   1, OPTION_NONE,    0, 0, SW_NRF,    KYOSHO2_init,    KYOSHO2_callback    },

@@ -246,7 +246,7 @@ uint8_t packet_in[TELEMETRY_BUFFER_SIZE];//telemetry receiving packets
 	#endif
 
 	//RX protocols
-	#if defined(AFHDS2A_RX_A7105_INO) || defined(FRSKY_RX_CC2500_INO) || defined(BAYANG_RX_NRF24L01_INO) || defined(DSM_RX_CYRF6936_INO)
+	#if defined(AFHDS2A_RX_A7105_INO) || defined(KYOSHO_RX_A7105_INO) || defined(FRSKY_RX_CC2500_INO) || defined(BAYANG_RX_NRF24L01_INO) || defined(DSM_RX_CYRF6936_INO)
 		bool rx_data_started;
 		bool rx_data_received;
 		bool rx_disable_lna;
@@ -767,7 +767,7 @@ void End_Bind()
 {
 	//Request protocol to terminate bind
 	if(protocol==PROTO_FRSKYD || protocol==PROTO_FRSKYL || protocol==PROTO_FRSKYX || protocol==PROTO_FRSKYX2 || protocol==PROTO_FRSKYV || protocol==PROTO_FRSKY_R9
-	|| protocol==PROTO_DSM_RX || protocol==PROTO_AFHDS2A_RX || protocol==PROTO_FRSKY_RX || protocol==PROTO_BAYANG_RX
+	|| protocol==PROTO_DSM_RX || protocol==PROTO_AFHDS2A_RX || protocol==PROTO_KYOSHO_RX || protocol==PROTO_FRSKY_RX || protocol==PROTO_BAYANG_RX
 	|| protocol==PROTO_AFHDS2A || protocol==PROTO_BUGS || protocol==PROTO_BUGSMINI || protocol==PROTO_HOTT || protocol==PROTO_ASSAN)
 		BIND_DONE;
 	else
@@ -779,7 +779,7 @@ void Update_Telem()
 {
 	#if defined(TELEMETRY)
 		#ifndef MULTI_TELEMETRY
-			if((protocol == PROTO_BAYANG_RX) || (protocol == PROTO_AFHDS2A_RX) || (protocol == PROTO_FRSKY_RX) || (protocol == PROTO_SCANNER) || (protocol==PROTO_FRSKYD) || (protocol==PROTO_BAYANG) || (protocol==PROTO_NCC1701) || (protocol==PROTO_BUGS) || (protocol==PROTO_BUGSMINI) || (protocol==PROTO_HUBSAN) || (protocol==PROTO_AFHDS2A) || (protocol==PROTO_FRSKYX) || (protocol==PROTO_FRSKYX2) || (protocol==PROTO_DSM) || (protocol==PROTO_CABELL) || (protocol==PROTO_HITEC) || (protocol==PROTO_HOTT) || (protocol==PROTO_PROPEL) || (protocol==PROTO_OMP) || (protocol==PROTO_DEVO) || (protocol==PROTO_DSM_RX) || (protocol==PROTO_FRSKY_R9) || (protocol==PROTO_RLINK) || (protocol==PROTO_WFLY2) || (protocol==PROTO_LOLI) || (protocol==PROTO_MLINK) || (protocol==PROTO_MT99XX))
+			if((protocol == PROTO_BAYANG_RX) || (protocol == PROTO_AFHDS2A_RX) || (protocol == PROTO_KYOSHO_RX) || (protocol == PROTO_FRSKY_RX) || (protocol == PROTO_SCANNER) || (protocol==PROTO_FRSKYD) || (protocol==PROTO_BAYANG) || (protocol==PROTO_NCC1701) || (protocol==PROTO_BUGS) || (protocol==PROTO_BUGSMINI) || (protocol==PROTO_HUBSAN) || (protocol==PROTO_AFHDS2A) || (protocol==PROTO_FRSKYX) || (protocol==PROTO_FRSKYX2) || (protocol==PROTO_DSM) || (protocol==PROTO_CABELL) || (protocol==PROTO_HITEC) || (protocol==PROTO_HOTT) || (protocol==PROTO_PROPEL) || (protocol==PROTO_OMP) || (protocol==PROTO_DEVO) || (protocol==PROTO_DSM_RX) || (protocol==PROTO_FRSKY_R9) || (protocol==PROTO_RLINK) || (protocol==PROTO_WFLY2) || (protocol==PROTO_LOLI) || (protocol==PROTO_MLINK) || (protocol==PROTO_MT99XX))
 		#endif
 				if(IS_DISABLE_TELEM_off)
 					TelemetryUpdate();
@@ -863,7 +863,7 @@ bool Update_All()
 	#ifdef SEND_CPPM
 		if ( telemetry_link & 0x80 )
 		{ // Protocol requests telemetry to be disabled
-			if( protocol == PROTO_FRSKY_RX || protocol == PROTO_AFHDS2A_RX || protocol == PROTO_BAYANG_RX || protocol == PROTO_DSM_RX )
+			if( protocol == PROTO_FRSKY_RX || protocol == PROTO_AFHDS2A_RX || protocol == PROTO_KYOSHO_RX || protocol == PROTO_BAYANG_RX || protocol == PROTO_DSM_RX )
 			{ // RX protocol
 				if(RX_LQI == 0)
 					telemetry_link = 0x00;					// restore normal telemetry on connection loss
@@ -1176,7 +1176,7 @@ static void protocol_init()
 			TX_RX_PAUSE_off;
 			TX_MAIN_PAUSE_off;
 			tx_resume();
-			#if defined(AFHDS2A_RX_A7105_INO) || defined(FRSKY_RX_CC2500_INO) || defined(BAYANG_RX_NRF24L01_INO) || defined(DSM_RX_CYRF6936_INO)
+			#if defined(AFHDS2A_RX_A7105_INO) || defined(KYOSHO_RX_A7105_INO) || defined(FRSKY_RX_CC2500_INO) || defined(BAYANG_RX_NRF24L01_INO) || defined(DSM_RX_CYRF6936_INO)
 				for(uint8_t ch=0; ch<16; ch++)
 					rx_rc_chan[ch] = 1024;
 			#endif

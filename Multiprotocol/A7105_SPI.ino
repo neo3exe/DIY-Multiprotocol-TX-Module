@@ -206,6 +206,7 @@ void A7105_AdjustLOBaseFreq(uint8_t cmd)
 				#endif
 				break;
 			case PROTO_KYOSHO:
+			case PROTO_KYOSHO_RX:
 				#ifdef FORCE_KYOSHO_TUNING
 					offset=(int16_t)FORCE_KYOSHO_TUNING;
 				#endif
@@ -423,6 +424,10 @@ void A7105_Init(void)
 					else //FHSS && SYNCRO
 						A7105_Regs=(uint8_t*)KYOSHO_A7105_regs;
 				}
+			#endif
+			#ifdef KYOSHO_RX_A7105_INO
+				if(protocol==PROTO_KYOSHO_RX)
+					A7105_Regs=(uint8_t*)KYOSHO_A7105_regs;
 			#endif
 		}
 

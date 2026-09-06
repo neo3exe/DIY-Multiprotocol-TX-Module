@@ -137,6 +137,7 @@ enum PROTOCOLS
 	PROTO_WPL		= 107,	// =>NRF24L01
 	PROTO_ARES		= 108,	// =>CC2500
 	PROTO_MOFLY		= 109,	// =>CC2500 & NRF24L01
+	PROTO_KYOSHO_RX	= 110,	// =>A7105
 	
 	PROTO_NANORF	= 126,	// =>NRF24L01
 	PROTO_TEST		= 127,	// =>CC2500
@@ -892,7 +893,8 @@ enum {
 #define TRAXXAS_EEPROM_OFFSET	1079	// RX ID and SOP index, 3 bytes per model id, end is 1079+192=1271
 #define XK2_EEPROM_OFFSET		1271	// RX ID checksum, 1 byte per model, end is 1271+64=1335
 #define JIABAILE_EEPROM_OFFSET	1335	// RX ID, 3 bytes per model, end is 1335+64*3=1527
-//#define CONFIG_EEPROM_OFFSET 	1527	// Current configuration of the multimodule
+#define KYOSHO_RX_EEPROM_OFFSET	1527	// (4) TX ID + (32) channels, 36 bytes, end is 1527+36=1563
+//#define CONFIG_EEPROM_OFFSET 	1563	// Current configuration of the multimodule
 
 /* STM32 Flash Size */
 #ifndef DISABLE_FLASH_SIZE_CHECK
@@ -1005,6 +1007,7 @@ Serial: 100000 Baud 8e2      _ xxxx xxxx p --
 				JOYSWAY		84
 				E016H		85
 				XERALL		91
+				KYOSHO_RX	110
    BindBit=>		0x80	1=Bind/0=No
    AutoBindBit=>	0x40	1=Yes /0=No
    RangeCheck=>		0x20	1=Yes /0=No

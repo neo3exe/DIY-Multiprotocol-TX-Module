@@ -274,7 +274,7 @@ static void multi_send_status()
 	}
 #endif
 
-#if defined (FRSKY_RX_TELEMETRY) || defined (AFHDS2A_RX_TELEMETRY) || defined (BAYANG_RX_TELEMETRY) || defined (DSM_RX_CYRF6936_INO)
+#if defined (FRSKY_RX_TELEMETRY) || defined (AFHDS2A_RX_TELEMETRY) || defined (KYOSHO_RX_TELEMETRY) || defined (BAYANG_RX_TELEMETRY) || defined (DSM_RX_CYRF6936_INO)
 	void receiver_channels_frame()
 	{
 		uint16_t len = packet_in[3] * 11;			// 11 bit per channel
@@ -1017,8 +1017,8 @@ void TelemetryUpdate()
 				return;
 			}
 		#endif
-		#if defined (FRSKY_RX_TELEMETRY) || defined(AFHDS2A_RX_TELEMETRY) || defined (BAYANG_RX_TELEMETRY) || defined (DSM_RX_CYRF6936_INO)
-			if ((telemetry_link & 1) && (protocol == PROTO_FRSKY_RX || protocol == PROTO_AFHDS2A_RX || protocol == PROTO_BAYANG_RX || protocol == PROTO_DSM_RX) )
+		#if defined (FRSKY_RX_TELEMETRY) || defined(AFHDS2A_RX_TELEMETRY) || defined (KYOSHO_RX_TELEMETRY) || defined (BAYANG_RX_TELEMETRY) || defined (DSM_RX_CYRF6936_INO)
+			if ((telemetry_link & 1) && (protocol == PROTO_FRSKY_RX || protocol == PROTO_AFHDS2A_RX || protocol == PROTO_KYOSHO_RX || protocol == PROTO_BAYANG_RX || protocol == PROTO_DSM_RX) )
 			{
 				receiver_channels_frame();
 				telemetry_link &= ~1;
