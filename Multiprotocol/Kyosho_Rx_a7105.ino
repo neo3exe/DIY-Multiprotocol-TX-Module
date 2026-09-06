@@ -40,8 +40,7 @@
 #define KYOSHO_RX_PERIOD		3852	// packet_period on the TX
 #define KYOSHO_RX_EARLY			600		// start watching this long before the packet is due
 #define KYOSHO_RX_LATE			1000	// give up on it this long after
-#define KYOSHO_RX_POLL			200		// how finely to watch inside that window
-#define KYOSHO_RX_POLLS			((KYOSHO_RX_EARLY + KYOSHO_RX_LATE) / KYOSHO_RX_POLL)
+#define KYOSHO_RX_POLL			300		// how finely to watch inside that window
 #define KYOSHO_RX_SEARCH_POLL	500		// polling step while hunting for the TX
 #define KYOSHO_RX_SEARCH_DWELL	300		// ~150ms per channel, over one full pass of the table
 #define KYOSHO_RX_LOST			64		// consecutive misses before dropping back to searching
@@ -52,7 +51,10 @@ enum {
 	KYOSHO_RX_TRACK			// locked: follow the hop index the TX announces
 };
 
-static uint8_t KYOSHO_RX_polls;		// polls done inside the current arrival window
+// The callback is not a reliable clock: when the main loop blocks on telemetry the scheduler
+// runs late and fires several callbacks back to back (Short CB in the debug log). Counting them
+// would collapse the arrival window, so the schedule is held against micros() instead.
+static uint32_t KYOSHO_RX_due;		// when the next packet is expected
 static uint8_t KYOSHO_RX_misses;	// consecutive packets not seen
 static uint16_t KYOSHO_RX_dwell;	// polls done on the current channel while searching
 static uint8_t KYOSHO_RX_hop_ok;	// 0xFF once the announced hop index has proven itself
@@ -84,6 +86,17 @@ static void __attribute__((unused)) KYOSHO_RX_build_telemetry_packet()
 			bitsavailable -= 8;
 		}
 	}
+}
+
+// Sleep until the arrival window opens, never less than one poll and never past one period
+static uint16_t __attribute__((unused)) KYOSHO_RX_sleep()
+{
+	int32_t t = (int32_t)(KYOSHO_RX_due - KYOSHO_RX_EARLY - micros());
+	if (t < KYOSHO_RX_POLL)
+		return KYOSHO_RX_POLL;
+	if (t > KYOSHO_RX_PERIOD)
+		return KYOSHO_RX_PERIOD;
+	return t;
 }
 
 // Tune to an entry of the RF table and start listening on it
@@ -158,6 +171,7 @@ static uint8_t __attribute__((unused)) KYOSHO_RX_read()
 	}
 
 	KYOSHO_RX_listen(next);			// arm on the next channel now, the TX is heading there
+	KYOSHO_RX_due = micros() + KYOSHO_RX_PERIOD;
 	rx_data_started = true;
 	KYOSHO_RX_misses = 0;
 	pps_counter++;
@@ -171,7 +185,7 @@ void KYOSHO_RX_init()
 	// The Kyosho register table is a TX one, enable the automatic RSSI measurement needed on a RX
 	A7105_WriteReg(A7105_01_MODE_CONTROL, 0x42 | (1<<5));
 	packet_count = 0;
-	KYOSHO_RX_polls = 0;
+	KYOSHO_RX_due = micros();
 	KYOSHO_RX_misses = 0;
 	KYOSHO_RX_dwell = 0;
 	KYOSHO_RX_hop_ok = 0;
@@ -260,9 +274,8 @@ uint16_t KYOSHO_RX_callback()
 	case KYOSHO_RX_SEARCH:
 		if (KYOSHO_RX_check() == 1 && KYOSHO_RX_read())
 		{ // caught it, from here on we know where and when the next one will be
-			KYOSHO_RX_polls = 0;
 			phase = KYOSHO_RX_TRACK;
-			return KYOSHO_RX_PERIOD - KYOSHO_RX_EARLY;
+			return KYOSHO_RX_sleep();
 		}
 		if (++KYOSHO_RX_dwell >= KYOSHO_RX_SEARCH_DWELL)
 		{ // the TX passes over every channel once per sweep of the table, so try the next one
@@ -273,16 +286,13 @@ uint16_t KYOSHO_RX_callback()
 
 	case KYOSHO_RX_TRACK:
 		if (KYOSHO_RX_check() == 1 && KYOSHO_RX_read())
-		{ // on schedule, sleep until the next packet is nearly due
-			KYOSHO_RX_polls = 0;
-			return KYOSHO_RX_PERIOD - KYOSHO_RX_EARLY;
-		}
-		if (++KYOSHO_RX_polls <= KYOSHO_RX_POLLS)
+			return KYOSHO_RX_sleep();			// on schedule, wait for the next one
+		if ((int32_t)(micros() - (KYOSHO_RX_due + KYOSHO_RX_LATE)) < 0)
 			return KYOSHO_RX_POLL;				// still inside the arrival window
 
 		// Missed one. The TX moves on by exactly one channel every period, so follow it there
 		// instead of guessing: a lost packet then costs one packet, not the lock.
-		KYOSHO_RX_polls = 0;
+		KYOSHO_RX_due += KYOSHO_RX_PERIOD;
 		if (++KYOSHO_RX_misses >= KYOSHO_RX_LOST)
 		{
 			debugln("lost");
@@ -294,7 +304,7 @@ uint16_t KYOSHO_RX_callback()
 			return KYOSHO_RX_SEARCH_POLL;
 		}
 		KYOSHO_RX_listen((hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1));
-		return KYOSHO_RX_PERIOD - KYOSHO_RX_EARLY - KYOSHO_RX_LATE;
+		return KYOSHO_RX_sleep();
 	}
 	return KYOSHO_RX_PERIOD; // never reached
 }
