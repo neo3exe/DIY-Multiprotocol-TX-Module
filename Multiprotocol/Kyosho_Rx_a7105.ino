@@ -61,6 +61,10 @@ static uint8_t KYOSHO_RX_missed;	// consecutive hops without a packet
 static uint8_t KYOSHO_RX_next_ch;	// channel to hop to at the next hop, 0xFF if not known
 static uint16_t KYOSHO_RX_bad;		// packets received per second with a CRC or FEC error
 static uint16_t KYOSHO_RX_raw;		// packets received per second with a valid CRC, whatever their ID
+static uint8_t KYOSHO_RX_ticks;		// callbacks elapsed since the last packet received
+static uint8_t KYOSHO_RX_period;	// measured callbacks between 2 packets, ie the TX hop period
+#define KYOSHO_RX_PERIOD_MIN	8	// a Kyosho TX sends between about 3ms (RM005) and 8ms (KT-531P) apart
+#define KYOSHO_RX_PERIOD_MAX	40
 
 static uint8_t __attribute__((unused)) KYOSHO_RX_data_ready()
 {
@@ -81,6 +85,8 @@ void KYOSHO_RX_init()
 	KYOSHO_RX_next_ch = 0xFF;
 	KYOSHO_RX_bad = 0;
 	KYOSHO_RX_raw = 0;
+	KYOSHO_RX_ticks = 0;
+	KYOSHO_RX_period = 10;	// 3852us, refined from the air as soon as packets come in
 	rx_data_started = false;
 	rx_disable_lna = IS_POWER_FLAG_on;
 	A7105_SetTxRxMode(rx_disable_lna ? TXRX_OFF : RX_EN);
@@ -152,6 +158,8 @@ uint16_t KYOSHO_RX_callback()
 		return 10000;
 
 	case KYOSHO_RX_DATA:
+		if (KYOSHO_RX_ticks < 0xFF)
+			KYOSHO_RX_ticks++;
 		mode = A7105_ReadReg(A7105_00_MODE);
 		if (mode & 0x01)
 		{ // still armed and waiting for a packet, nothing to do
@@ -200,8 +208,14 @@ uint16_t KYOSHO_RX_callback()
 						KYOSHO_RX_next_ch = (hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1);
 					KYOSHO_RX_missed = 0;
 				}
+				// Learn how fast this TX actually sends: the RM005 is around 3852us like Kyosho_a7105.ino
+				// assumes, but a real KT-531P is about twice that. Hopping blind on the wrong period puts
+				// us on a channel the TX never visits, which turns one missed packet into a long loss.
+				if (rx_data_started && KYOSHO_RX_ticks >= KYOSHO_RX_PERIOD_MIN && KYOSHO_RX_ticks <= KYOSHO_RX_PERIOD_MAX)
+					KYOSHO_RX_period = KYOSHO_RX_ticks;
+				KYOSHO_RX_ticks = 0;
 				rx_data_started = true;
-				read_retry = 10;	// hop to the next channel on the next tick
+				read_retry = KYOSHO_RX_period;	// hop to the next channel straight away
 				pps_counter++;
 			}
 		}
@@ -209,7 +223,7 @@ uint16_t KYOSHO_RX_callback()
 		// packets per second
 		if (millis() - pps_timer >= 1000) {
 			pps_timer = millis();
-			debugln("%d pps, %d raw, %d bad, trust %d", pps_counter, KYOSHO_RX_raw, KYOSHO_RX_bad, KYOSHO_RX_hop_trust);
+			debugln("%d pps, %d raw, %d bad, trust %d, period %d", pps_counter, KYOSHO_RX_raw, KYOSHO_RX_bad, KYOSHO_RX_hop_trust, KYOSHO_RX_period);
 			RX_LQI = pps_counter / 2;
 			pps_counter = 0;
 			KYOSHO_RX_raw = 0;
@@ -217,7 +231,7 @@ uint16_t KYOSHO_RX_callback()
 		}
 
 		// frequency hopping
-		if (read_retry++ >= 10) {
+		if (read_retry++ >= (int8_t)KYOSHO_RX_period) {
 			if (KYOSHO_RX_next_ch != 0xFF)
 			{ // channel announced by the last packet received
 				hopping_frequency_no = KYOSHO_RX_next_ch;
