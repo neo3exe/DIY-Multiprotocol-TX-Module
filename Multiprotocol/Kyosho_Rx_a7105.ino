@@ -17,16 +17,47 @@
 
 #include "iface_a7105.h"
 
-#define KYOSHO_RX_TXPACKET_SIZE	38	// FIFO length configured by the register table
-#define KYOSHO_RX_NUMFREQ		32	// full hopping table, sent by the TX in 2 halves of 16
-// Bytes 9..34 carry 13 channels. Byte 35/36 is a trailer whose low nibble is always 0x0F on a real
-// KT-531P, so it is not a 14th channel: decoding it as one pins that channel at full scale.
-#define KYOSHO_RX_NUMCHAN		13
+// Derived from the transmit side in Kyosho_a7105.ino, FHSS/Syncro path:
+//   - calc_fh_channels(32) and hopping_frequency_no++ once per packet, so the TX walks its
+//     32 entry table one channel at a time, one packet per channel
+//   - packet_period 3852us, KYOSHO_FORCE_ID_FHSS carries a real captured ID and table
+//   - A7105_WriteData(37, ...) while the register table sets FIFO length 0x25, so 38 bytes go
+//     over the air and byte 37 is stale FIFO content
+//   - normal packet 0x58: TX id in 1..4, 0xFF in 5..8, channels from byte 9, and the index of
+//     the *next* hop stuffed into the spare high bits of bytes 34 and 36
+//   - bind packet 0xBC: half the RF table per packet, half selected by byte 9, sent on 0x0D for
+//     the low half and 0x8C for the high half, type 0x05 or 0x07 alternating in byte 27
+//
+// The TX therefore announces both where and when its next packet will be. This receiver holds a
+// schedule against that timeline instead of polling on a free running grid: it arms on the
+// announced channel immediately, sleeps until the packet is nearly due, then watches finely
+// across the arrival window. A miss costs exactly one channel and one period, so it stays on the
+// TX schedule rather than drifting away from it.
+
+#define KYOSHO_RX_PACKET_SIZE	38		// what the register table FIFO length puts on the air
+#define KYOSHO_RX_NUMFREQ		32		// calc_fh_channels(32)
+#define KYOSHO_RX_NUMCHAN		13		// bytes 9..34, byte 35/36 is a trailer and not a channel
+#define KYOSHO_RX_PERIOD		3852	// packet_period on the TX
+#define KYOSHO_RX_EARLY			600		// start watching this long before the packet is due
+#define KYOSHO_RX_LATE			1000	// give up on it this long after
+#define KYOSHO_RX_POLL			200		// how finely to watch inside that window
+#define KYOSHO_RX_POLLS			((KYOSHO_RX_EARLY + KYOSHO_RX_LATE) / KYOSHO_RX_POLL)
+#define KYOSHO_RX_SEARCH_POLL	500		// polling step while hunting for the TX
+#define KYOSHO_RX_SEARCH_DWELL	300		// ~150ms per channel, over one full pass of the table
+#define KYOSHO_RX_LOST			64		// consecutive misses before dropping back to searching
 
 enum {
 	KYOSHO_RX_BIND,
-	KYOSHO_RX_DATA
+	KYOSHO_RX_SEARCH,		// not locked: sit on a channel long enough for the TX to come past
+	KYOSHO_RX_TRACK			// locked: follow the hop index the TX announces
 };
+
+static uint8_t KYOSHO_RX_polls;		// polls done inside the current arrival window
+static uint8_t KYOSHO_RX_misses;	// consecutive packets not seen
+static uint16_t KYOSHO_RX_dwell;	// polls done on the current channel while searching
+static uint8_t KYOSHO_RX_hop_ok;	// 0xFF once the announced hop index has proven itself
+static uint8_t KYOSHO_RX_last_idx;	// hop index announced by the previous packet caught
+static uint16_t KYOSHO_RX_raw, KYOSHO_RX_bad, KYOSHO_RX_d1, KYOSHO_RX_d2, KYOSHO_RX_dx;
 
 static void __attribute__((unused)) KYOSHO_RX_build_telemetry_packet()
 {
@@ -38,13 +69,12 @@ static void __attribute__((unused)) KYOSHO_RX_build_telemetry_packet()
 	packet_in[idx++] = RX_RSSI;
 	packet_in[idx++] = 0; // start channel
 	packet_in[idx++] = KYOSHO_RX_NUMCHAN; // number of channels in packet
-	// pack channels
 	for (uint8_t i = 0; i < KYOSHO_RX_NUMCHAN; i++) {
+		// convert_channel_ppm() on the TX, so 860-2140 with the high nibble left free
 		uint32_t val = packet[9+i*2] | (((packet[10+i*2])&0x0F) << 8);
 		if (val < 860)
 			val = 860;
-		// convert ppm (860-2140) to Multi (0-2047)
-		val = min(((val-860)<<3)/5, 2047);
+		val = min(((val-860)<<3)/5, 2047);	// to Multi 0-2047
 
 		bits |= val << bitsavailable;
 		bitsavailable += 11;
@@ -56,20 +86,82 @@ static void __attribute__((unused)) KYOSHO_RX_build_telemetry_packet()
 	}
 }
 
-static uint8_t KYOSHO_RX_hop_trust;	// 0xFF once the hop index embedded by the TX has been validated
-static uint8_t KYOSHO_RX_missed;	// consecutive hops without a packet
-static uint8_t KYOSHO_RX_next_ch;	// channel to hop to at the next hop, 0xFF if not known
-static uint16_t KYOSHO_RX_bad;		// packets received per second with a CRC or FEC error
-static uint16_t KYOSHO_RX_raw;		// packets received per second with a valid CRC, whatever their ID
-static uint8_t KYOSHO_RX_last_idx;	// hop index announced by the previous packet received
-static uint16_t KYOSHO_RX_d1;		// receptions where the TX advanced 1 channel since the previous one
-static uint16_t KYOSHO_RX_d2;		// ... 2 channels, ie exactly one packet missed in between
-static uint16_t KYOSHO_RX_dx;		// ... anything else
-
-static uint8_t __attribute__((unused)) KYOSHO_RX_data_ready()
+// Tune to an entry of the RF table and start listening on it
+static void __attribute__((unused)) KYOSHO_RX_listen(uint8_t idx)
 {
-	// check if FECF+CRCF Ok
-	return !(A7105_ReadReg(A7105_00_MODE) & (1 << 5 | 1 << 6 | 1 << 0));
+	hopping_frequency_no = idx;
+	A7105_WriteReg(A7105_0F_PLL_I, hopping_frequency[idx]);
+	A7105_Strobe(A7105_RX);
+}
+
+// 0 = nothing yet, 1 = good packet waiting in the FIFO, 2 = one arrived but was corrupted
+static uint8_t __attribute__((unused)) KYOSHO_RX_check()
+{
+	uint8_t mode = A7105_ReadReg(A7105_00_MODE);
+	if (mode & 0x01)
+		return 0;					// still armed, nothing has come in
+	if (mode & (1 << 5 | 1 << 6))
+	{ // CRC or FEC failed, the A7105 goes idle so put it straight back to listening
+		KYOSHO_RX_bad++;
+		A7105_Strobe(A7105_RX);
+		return 2;
+	}
+	return 1;
+}
+
+// Consume a packet from the FIFO while locked. Returns 1 if it was one of ours.
+static uint8_t __attribute__((unused)) KYOSHO_RX_read()
+{
+	uint8_t next, d;
+
+	A7105_ReadData(KYOSHO_RX_PACKET_SIZE);
+	KYOSHO_RX_raw++;
+	if (memcmp(&packet[1], rx_id, 4) != 0 || packet[0] != 0x58)
+	{ // not ours, keep listening on this channel
+		A7105_Strobe(A7105_RX);
+		return 0;
+	}
+
+	if ((telemetry_link & 0x7F) == 0)
+	{
+		int rssi = min(A7105_ReadReg(A7105_1D_RSSI_THOLD),160);
+		RX_RSSI = map16b(rssi, 160, 8, 0, 128);
+		KYOSHO_RX_build_telemetry_packet();
+		telemetry_link = 1;
+		#ifdef SEND_CPPM
+			if(sub_protocol>0)
+				telemetry_link |= 0x80;	// Disable telemetry output
+		#endif
+	}
+
+	// Index of the next hop, from the spare high bits of the last 2 channel slots
+	next = ((packet[34] >> 4) | (packet[36] & 0xF0)) & (KYOSHO_RX_NUMFREQ - 1);
+	if (KYOSHO_RX_last_idx != 0xFF)
+	{ // how far did the TX move between the 2 packets we caught?
+		d = (next - KYOSHO_RX_last_idx) & (KYOSHO_RX_NUMFREQ - 1);
+		if (d == 1)			KYOSHO_RX_d1++;
+		else if (d == 2)	KYOSHO_RX_d2++;
+		else				KYOSHO_RX_dx++;
+	}
+	KYOSHO_RX_last_idx = next;
+
+	if (KYOSHO_RX_hop_ok != 0xFF)
+	{ // only follow the announced index once it has been seen tracking our own hopping
+		if (next == ((hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1)))
+		{
+			if (++KYOSHO_RX_hop_ok >= 20)
+				KYOSHO_RX_hop_ok = 0xFF;
+		}
+		else
+			KYOSHO_RX_hop_ok = 0;
+		next = (hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1);
+	}
+
+	KYOSHO_RX_listen(next);			// arm on the next channel now, the TX is heading there
+	rx_data_started = true;
+	KYOSHO_RX_misses = 0;
+	pps_counter++;
+	return 1;
 }
 
 void KYOSHO_RX_init()
@@ -78,25 +170,21 @@ void KYOSHO_RX_init()
 	A7105_Init();
 	// The Kyosho register table is a TX one, enable the automatic RSSI measurement needed on a RX
 	A7105_WriteReg(A7105_01_MODE_CONTROL, 0x42 | (1<<5));
-	hopping_frequency_no = 0;
 	packet_count = 0;
-	KYOSHO_RX_hop_trust = 0;
-	KYOSHO_RX_missed = 0;
-	KYOSHO_RX_next_ch = 0xFF;
-	KYOSHO_RX_bad = 0;
-	KYOSHO_RX_raw = 0;
+	KYOSHO_RX_polls = 0;
+	KYOSHO_RX_misses = 0;
+	KYOSHO_RX_dwell = 0;
+	KYOSHO_RX_hop_ok = 0;
 	KYOSHO_RX_last_idx = 0xFF;
-	KYOSHO_RX_d1 = 0;
-	KYOSHO_RX_d2 = 0;
-	KYOSHO_RX_dx = 0;
+	KYOSHO_RX_raw = KYOSHO_RX_bad = KYOSHO_RX_d1 = KYOSHO_RX_d2 = KYOSHO_RX_dx = 0;
 	rx_data_started = false;
 	rx_disable_lna = IS_POWER_FLAG_on;
 	A7105_SetTxRxMode(rx_disable_lna ? TXRX_OFF : RX_EN);
-	A7105_Strobe(A7105_RX);
 
 	if (IS_BIND_IN_PROGRESS) {
-		packet_sent = 0;			// halves of the RF table already received
+		packet_sent = 0;		// halves of the RF table received so far
 		phase = KYOSHO_RX_BIND;
+		A7105_Strobe(A7105_RX);
 	}
 	else {
 		uint16_t temp = KYOSHO_RX_EEPROM_OFFSET;
@@ -104,15 +192,15 @@ void KYOSHO_RX_init()
 			rx_id[i] = eeprom_read_byte((EE_ADDR)temp++);
 		for (i = 0; i < KYOSHO_RX_NUMFREQ; i++)
 			hopping_frequency[i] = eeprom_read_byte((EE_ADDR)temp++);
-		phase = KYOSHO_RX_DATA;
+		phase = KYOSHO_RX_SEARCH;
+		KYOSHO_RX_listen(0);
 	}
 }
 
 uint16_t KYOSHO_RX_callback()
 {
-	static int8_t read_retry;
 	uint16_t temp;
-	uint8_t i, mode;
+	uint8_t i;
 
 #ifndef FORCE_KYOSHO_TUNING
 	A7105_AdjustLOBaseFreq(1);
@@ -122,6 +210,15 @@ uint16_t KYOSHO_RX_callback()
 		A7105_SetTxRxMode(rx_disable_lna ? TXRX_OFF : RX_EN);
 	}
 
+	// packets per second, and how far the TX hop index moved between the packets we caught
+	if (phase != KYOSHO_RX_BIND && millis() - pps_timer >= 1000) {
+		pps_timer = millis();
+		debugln("%d pps, %d raw, %d bad, hop %d, d1 %d d2 %d dx %d", pps_counter, KYOSHO_RX_raw, KYOSHO_RX_bad, KYOSHO_RX_hop_ok, KYOSHO_RX_d1, KYOSHO_RX_d2, KYOSHO_RX_dx);
+		RX_LQI = pps_counter / 2;		// a healthy link is 1000000/3852 = 260 packets per second
+		pps_counter = 0;
+		KYOSHO_RX_raw = KYOSHO_RX_bad = KYOSHO_RX_d1 = KYOSHO_RX_d2 = KYOSHO_RX_dx = 0;
+	}
+
 	switch(phase) {
 	case KYOSHO_RX_BIND:
 		if(IS_BIND_DONE)
@@ -129,11 +226,11 @@ uint16_t KYOSHO_RX_callback()
 			KYOSHO_RX_init();	// Abort bind
 			break;
 		}
-		if (KYOSHO_RX_data_ready()) {
-			A7105_ReadData(KYOSHO_RX_TXPACKET_SIZE);
-			// bind packet: BC, TX ID, FF FF FF FF, RF table half, 00, 16 RF channels, TX type
+		if (KYOSHO_RX_check() == 1) {
+			A7105_ReadData(KYOSHO_RX_PACKET_SIZE);
+			// BC, TX id, FF FF FF FF, table half, 00, 16 RF channels, 05 FHSS or 07 Syncro
 			if (packet[0] == 0xBC && packet[9] <= 0x01 && packet[10] == 0x00
-				&& (packet[27] == 0x05 || packet[27] == 0x07))	// FHSS is 5 and Syncro is 7
+				&& (packet[27] == 0x05 || packet[27] == 0x07))
 			{
 				if (packet_sent && memcmp(rx_id, &packet[1], 4) != 0)
 					packet_sent = 0;			// another TX started binding, restart from scratch
@@ -155,118 +252,51 @@ uint16_t KYOSHO_RX_callback()
 				}
 			}
 		}
-		A7105_WriteReg(A7105_0F_PLL_I, (packet_count++ & 1) ? 0x0D : 0x8C); // bind channels
+		// the TX alternates halves packet by packet and sends each one on its own channel
+		A7105_WriteReg(A7105_0F_PLL_I, (packet_count++ & 1) ? 0x0D : 0x8C);
 		A7105_Strobe(A7105_RX);
 		return 10000;
 
-	case KYOSHO_RX_DATA:
-		mode = A7105_ReadReg(A7105_00_MODE);
-		if (mode & 0x01)
-		{ // still armed and waiting for a packet, nothing to do
+	case KYOSHO_RX_SEARCH:
+		if (KYOSHO_RX_check() == 1 && KYOSHO_RX_read())
+		{ // caught it, from here on we know where and when the next one will be
+			KYOSHO_RX_polls = 0;
+			phase = KYOSHO_RX_TRACK;
+			return KYOSHO_RX_PERIOD - KYOSHO_RX_EARLY;
 		}
-		else if (mode & (1 << 5 | 1 << 6))
-		{ // a packet came in but failed CRC or FEC: the A7105 is now idle, re-arm it straight away
-		  // instead of staying deaf until the next hop
-			KYOSHO_RX_bad++;
-			A7105_Strobe(A7105_RST_WRPTR);
-			A7105_Strobe(A7105_RX);
+		if (++KYOSHO_RX_dwell >= KYOSHO_RX_SEARCH_DWELL)
+		{ // the TX passes over every channel once per sweep of the table, so try the next one
+			KYOSHO_RX_dwell = 0;
+			KYOSHO_RX_listen((hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1));
 		}
-		else {
-			A7105_ReadData(KYOSHO_RX_TXPACKET_SIZE);
-			KYOSHO_RX_raw++;
-			if (memcmp(&packet[1], rx_id, 4) == 0)
-			{
-				if (packet[0] == 0x58)
-				{ // standard packet, send channels to TX
-					if ((telemetry_link&0x7F) == 0)
-					{
-						int rssi = min(A7105_ReadReg(A7105_1D_RSSI_THOLD),160);
-						RX_RSSI = map16b(rssi, 160, 8, 0, 128);
-						KYOSHO_RX_build_telemetry_packet();
-						telemetry_link = 1;
-						#ifdef SEND_CPPM
-							if(sub_protocol>0)
-								telemetry_link |= 0x80;	// Disable telemetry output
-						#endif
-					}
-					// The TX broadcasts the index of its next hop in the high bits of the last 2 channels,
-					// which are always free since a channel value never exceeds 2140 (0x85C).
-					// Following it keeps the RX locked whatever the TX packet period and jitter are.
-					temp = ((packet[34] >> 4) | (packet[36] & 0xF0)) & (KYOSHO_RX_NUMFREQ - 1);
-					if (KYOSHO_RX_hop_trust != 0xFF)
-					{ // only trust that index once it has been seen tracking our own hopping
-						if (temp == (uint16_t)((hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1)))
-						{
-							if (++KYOSHO_RX_hop_trust >= 20)
-								KYOSHO_RX_hop_trust = 0xFF;
-						}
-						else
-							KYOSHO_RX_hop_trust = 0;	// not a hop index on this TX, keep free running
-					}
-					if (KYOSHO_RX_last_idx != 0xFF)
-					{ // 1 = we caught consecutive TX packets, 2 = exactly one went missing in between
-						i = (temp - KYOSHO_RX_last_idx) & (KYOSHO_RX_NUMFREQ - 1);
-						if (i == 1)			KYOSHO_RX_d1++;
-						else if (i == 2)	KYOSHO_RX_d2++;
-						else				KYOSHO_RX_dx++;
-					}
-					KYOSHO_RX_last_idx = temp;
-					if (KYOSHO_RX_hop_trust == 0xFF)
-						KYOSHO_RX_next_ch = temp;		// exact resync on the TX
-					else
-						KYOSHO_RX_next_ch = (hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1);
-					KYOSHO_RX_missed = 0;
-				}
-				rx_data_started = true;
-				read_retry = 10;	// hop to the next channel straight away
-				pps_counter++;
-			}
-		}
+		return KYOSHO_RX_SEARCH_POLL;
 
-		// packets per second
-		if (millis() - pps_timer >= 1000) {
-			pps_timer = millis();
-			debugln("%d pps, %d raw, %d bad, trust %d, d1 %d d2 %d dx %d", pps_counter, KYOSHO_RX_raw, KYOSHO_RX_bad, KYOSHO_RX_hop_trust, KYOSHO_RX_d1, KYOSHO_RX_d2, KYOSHO_RX_dx);
-			RX_LQI = pps_counter / 2;
-			pps_counter = 0;
-			KYOSHO_RX_raw = 0;
-			KYOSHO_RX_bad = 0;
-			KYOSHO_RX_d1 = 0;
-			KYOSHO_RX_d2 = 0;
-			KYOSHO_RX_dx = 0;
+	case KYOSHO_RX_TRACK:
+		if (KYOSHO_RX_check() == 1 && KYOSHO_RX_read())
+		{ // on schedule, sleep until the next packet is nearly due
+			KYOSHO_RX_polls = 0;
+			return KYOSHO_RX_PERIOD - KYOSHO_RX_EARLY;
 		}
+		if (++KYOSHO_RX_polls <= KYOSHO_RX_POLLS)
+			return KYOSHO_RX_POLL;				// still inside the arrival window
 
-		// frequency hopping
-		if (read_retry++ >= 10) {
-			if (KYOSHO_RX_next_ch != 0xFF)
-			{ // channel announced by the last packet received
-				hopping_frequency_no = KYOSHO_RX_next_ch;
-				KYOSHO_RX_next_ch = 0xFF;
-			}
-			else
-				hopping_frequency_no = (hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1);
-			A7105_WriteReg(A7105_0F_PLL_I, hopping_frequency[hopping_frequency_no]);
-			// Reading the FIFO leaves the write pointer where the last packet ended, so the next packet
-			// lands past the end of the buffer and is never flagged as received. Reset it before arming,
-			// otherwise every packet that follows a read is lost and only half the traffic is heard.
-			A7105_Strobe(A7105_RST_WRPTR);
-			A7105_Strobe(A7105_RX);
-			if (rx_data_started && ++KYOSHO_RX_missed < KYOSHO_RX_NUMFREQ * 8)
-				read_retry = 0;
-			else
-			{ // nothing for 8 full passes over the table, the free running hop clock has drifted away
-				if (rx_data_started)
-				{
-					debugln("lost");
-				}
-				rx_data_started = false;
-				KYOSHO_RX_missed = 0;
-				read_retry = -127; // dwell on each channel until a packet is catched again
-			}
+		// Missed one. The TX moves on by exactly one channel every period, so follow it there
+		// instead of guessing: a lost packet then costs one packet, not the lock.
+		KYOSHO_RX_polls = 0;
+		if (++KYOSHO_RX_misses >= KYOSHO_RX_LOST)
+		{
+			debugln("lost");
+			rx_data_started = false;
+			KYOSHO_RX_misses = 0;
+			KYOSHO_RX_last_idx = 0xFF;
+			KYOSHO_RX_dwell = 0;
+			phase = KYOSHO_RX_SEARCH;
+			return KYOSHO_RX_SEARCH_POLL;
 		}
-		return 385;
+		KYOSHO_RX_listen((hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1));
+		return KYOSHO_RX_PERIOD - KYOSHO_RX_EARLY - KYOSHO_RX_LATE;
 	}
-	return 3852; // never reached
+	return KYOSHO_RX_PERIOD; // never reached
 }
 
 #endif
