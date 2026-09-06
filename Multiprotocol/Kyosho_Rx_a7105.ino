@@ -58,6 +58,8 @@ static uint8_t KYOSHO_RX_hop_trust;	// 0xFF once the hop index embedded by the T
 static uint8_t KYOSHO_RX_missed;	// consecutive hops without a packet
 static uint8_t KYOSHO_RX_next_ch;	// channel to hop to at the next hop, 0xFF if not known
 static uint16_t KYOSHO_RX_bad;		// packets received per second with a CRC or FEC error
+static uint16_t KYOSHO_RX_raw;		// packets received per second with a valid CRC, whatever their ID
+static uint8_t KYOSHO_RX_dump;		// dump the next packet received
 
 static uint8_t __attribute__((unused)) KYOSHO_RX_data_ready()
 {
@@ -77,6 +79,8 @@ void KYOSHO_RX_init()
 	KYOSHO_RX_missed = 0;
 	KYOSHO_RX_next_ch = 0xFF;
 	KYOSHO_RX_bad = 0;
+	KYOSHO_RX_raw = 0;
+	KYOSHO_RX_dump = 0;
 	rx_data_started = false;
 	rx_disable_lna = IS_POWER_FLAG_on;
 	A7105_SetTxRxMode(rx_disable_lna ? TXRX_OFF : RX_EN);
@@ -160,13 +164,16 @@ uint16_t KYOSHO_RX_callback()
 		}
 		else {
 			A7105_ReadData(KYOSHO_RX_TXPACKET_SIZE);
+			KYOSHO_RX_raw++;
+			if (KYOSHO_RX_dump)
+			{ // one packet per second, whatever its ID, to compare the real TX with what Kyosho_a7105.ino builds
+				KYOSHO_RX_dump = 0;
+				for(i = 0; i < KYOSHO_RX_TXPACKET_SIZE; i++)
+					debug(" %02X", packet[i]);
+				debugln("");
+			}
 			if (memcmp(&packet[1], rx_id, 4) == 0)
 			{
-				#if 0
-					for(uint8_t i=0;i<KYOSHO_RX_TXPACKET_SIZE;i++)
-						debug(" %02X",packet[i]);
-					debugln("");
-				#endif
 				if (packet[0] == 0x58)
 				{ // standard packet, send channels to TX
 					if ((telemetry_link&0x7F) == 0)
@@ -209,10 +216,12 @@ uint16_t KYOSHO_RX_callback()
 		// packets per second
 		if (millis() - pps_timer >= 1000) {
 			pps_timer = millis();
-			debugln("%d pps, %d bad, hop trust %d", pps_counter, KYOSHO_RX_bad, KYOSHO_RX_hop_trust);
+			debugln("%d pps, %d raw, %d bad, trust %d", pps_counter, KYOSHO_RX_raw, KYOSHO_RX_bad, KYOSHO_RX_hop_trust);
 			RX_LQI = pps_counter / 2;
 			pps_counter = 0;
+			KYOSHO_RX_raw = 0;
 			KYOSHO_RX_bad = 0;
+			KYOSHO_RX_dump = 1;
 		}
 
 		// frequency hopping
