@@ -56,6 +56,7 @@ static void __attribute__((unused)) KYOSHO_RX_build_telemetry_packet()
 
 static uint8_t KYOSHO_RX_hop_trust;	// 0xFF once the hop index embedded by the TX has been validated
 static uint8_t KYOSHO_RX_missed;	// consecutive hops without a packet
+static uint8_t KYOSHO_RX_next_ch;	// channel to hop to at the next hop, 0xFF if not known
 
 static uint8_t __attribute__((unused)) KYOSHO_RX_data_ready()
 {
@@ -73,6 +74,7 @@ void KYOSHO_RX_init()
 	packet_count = 0;
 	KYOSHO_RX_hop_trust = 0;
 	KYOSHO_RX_missed = 0;
+	KYOSHO_RX_next_ch = 0xFF;
 	rx_data_started = false;
 	rx_disable_lna = IS_POWER_FLAG_on;
 	A7105_SetTxRxMode(rx_disable_lna ? TXRX_OFF : RX_EN);
@@ -97,7 +99,6 @@ uint16_t KYOSHO_RX_callback()
 	static int8_t read_retry;
 	uint16_t temp;
 	uint8_t i;
-	bool hop;
 
 #ifndef FORCE_KYOSHO_TUNING
 	A7105_AdjustLOBaseFreq(1);
@@ -145,7 +146,6 @@ uint16_t KYOSHO_RX_callback()
 		return 10000;
 
 	case KYOSHO_RX_DATA:
-		hop = false;
 		if (KYOSHO_RX_data_ready()) {
 			A7105_ReadData(KYOSHO_RX_TXPACKET_SIZE);
 			if (memcmp(&packet[1], rx_id, 4) == 0)
@@ -174,24 +174,22 @@ uint16_t KYOSHO_RX_callback()
 					temp = ((packet[34] >> 4) | (packet[36] & 0xF0)) & (KYOSHO_RX_NUMFREQ - 1);
 					if (KYOSHO_RX_hop_trust != 0xFF)
 					{ // only trust that index once it has been seen tracking our own hopping
-						if (temp == ((hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1)))
+						if (temp == (uint16_t)((hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1)))
 						{
 							if (++KYOSHO_RX_hop_trust >= 20)
-							{
 								KYOSHO_RX_hop_trust = 0xFF;
-								debugln("hop index sync");
-							}
 						}
 						else
 							KYOSHO_RX_hop_trust = 0;	// not a hop index on this TX, keep free running
-						temp = (hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1);
 					}
-					hopping_frequency_no = temp;
-					hop = true;
+					if (KYOSHO_RX_hop_trust == 0xFF)
+						KYOSHO_RX_next_ch = temp;		// exact resync on the TX
+					else
+						KYOSHO_RX_next_ch = (hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1);
+					KYOSHO_RX_missed = 0;
 				}
 				rx_data_started = true;
-				KYOSHO_RX_missed = 0;
-				read_retry = 0;
+				read_retry = 10;	// hop to the next channel on the next tick
 				pps_counter++;
 			}
 		}
@@ -199,19 +197,26 @@ uint16_t KYOSHO_RX_callback()
 		// packets per second
 		if (millis() - pps_timer >= 1000) {
 			pps_timer = millis();
-			debugln("%d pps", pps_counter);
+			debugln("%d pps, hop trust %d", pps_counter, KYOSHO_RX_hop_trust);
 			RX_LQI = pps_counter / 2;
 			pps_counter = 0;
 		}
 
 		// frequency hopping
-		if (!hop && read_retry++ >= 10) {
-			hopping_frequency_no = (hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1);
-			hop = true;
-			if (rx_data_started && ++KYOSHO_RX_missed < KYOSHO_RX_NUMFREQ * 2)
+		if (read_retry++ >= 10) {
+			if (KYOSHO_RX_next_ch != 0xFF)
+			{ // channel announced by the last packet received
+				hopping_frequency_no = KYOSHO_RX_next_ch;
+				KYOSHO_RX_next_ch = 0xFF;
+			}
+			else
+				hopping_frequency_no = (hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1);
+			A7105_WriteReg(A7105_0F_PLL_I, hopping_frequency[hopping_frequency_no]);
+			A7105_Strobe(A7105_RX);
+			if (rx_data_started && ++KYOSHO_RX_missed < KYOSHO_RX_NUMFREQ * 8)
 				read_retry = 0;
 			else
-			{ // nothing for 2 full passes over the table: the free running hop clock has drifted away
+			{ // nothing for 8 full passes over the table, the free running hop clock has drifted away
 				if (rx_data_started)
 				{
 					debugln("lost");
@@ -220,10 +225,6 @@ uint16_t KYOSHO_RX_callback()
 				KYOSHO_RX_missed = 0;
 				read_retry = -127; // dwell on each channel until a packet is catched again
 			}
-		}
-		if (hop) {
-			A7105_WriteReg(A7105_0F_PLL_I, hopping_frequency[hopping_frequency_no]);
-			A7105_Strobe(A7105_RX);
 		}
 		return 385;
 	}
