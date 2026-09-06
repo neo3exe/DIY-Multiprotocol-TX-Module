@@ -168,6 +168,7 @@ uint16_t KYOSHO_RX_callback()
 		{ // a packet came in but failed CRC or FEC: the A7105 is now idle, re-arm it straight away
 		  // instead of staying deaf until the next hop
 			KYOSHO_RX_bad++;
+			A7105_Strobe(A7105_RST_WRPTR);
 			A7105_Strobe(A7105_RX);
 		}
 		else {
@@ -245,6 +246,10 @@ uint16_t KYOSHO_RX_callback()
 			else
 				hopping_frequency_no = (hopping_frequency_no + 1) & (KYOSHO_RX_NUMFREQ - 1);
 			A7105_WriteReg(A7105_0F_PLL_I, hopping_frequency[hopping_frequency_no]);
+			// Reading the FIFO leaves the write pointer where the last packet ended, so the next packet
+			// lands past the end of the buffer and is never flagged as received. Reset it before arming,
+			// otherwise every packet that follows a read is lost and only half the traffic is heard.
+			A7105_Strobe(A7105_RST_WRPTR);
 			A7105_Strobe(A7105_RX);
 			if (rx_data_started && ++KYOSHO_RX_missed < KYOSHO_RX_NUMFREQ * 8)
 				read_retry = 0;
