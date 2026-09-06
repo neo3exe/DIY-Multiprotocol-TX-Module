@@ -19,7 +19,9 @@
 
 #define KYOSHO_RX_TXPACKET_SIZE	38	// FIFO length configured by the register table
 #define KYOSHO_RX_NUMFREQ		32	// full hopping table, sent by the TX in 2 halves of 16
-#define KYOSHO_RX_NUMCHAN		14
+// Bytes 9..34 carry 13 channels. Byte 35/36 is a trailer whose low nibble is always 0x0F on a real
+// KT-531P, so it is not a 14th channel: decoding it as one pins that channel at full scale.
+#define KYOSHO_RX_NUMCHAN		13
 
 enum {
 	KYOSHO_RX_BIND,
@@ -59,7 +61,6 @@ static uint8_t KYOSHO_RX_missed;	// consecutive hops without a packet
 static uint8_t KYOSHO_RX_next_ch;	// channel to hop to at the next hop, 0xFF if not known
 static uint16_t KYOSHO_RX_bad;		// packets received per second with a CRC or FEC error
 static uint16_t KYOSHO_RX_raw;		// packets received per second with a valid CRC, whatever their ID
-static uint8_t KYOSHO_RX_dump;		// dump the next packet received
 
 static uint8_t __attribute__((unused)) KYOSHO_RX_data_ready()
 {
@@ -80,7 +81,6 @@ void KYOSHO_RX_init()
 	KYOSHO_RX_next_ch = 0xFF;
 	KYOSHO_RX_bad = 0;
 	KYOSHO_RX_raw = 0;
-	KYOSHO_RX_dump = 0;
 	rx_data_started = false;
 	rx_disable_lna = IS_POWER_FLAG_on;
 	A7105_SetTxRxMode(rx_disable_lna ? TXRX_OFF : RX_EN);
@@ -165,13 +165,6 @@ uint16_t KYOSHO_RX_callback()
 		else {
 			A7105_ReadData(KYOSHO_RX_TXPACKET_SIZE);
 			KYOSHO_RX_raw++;
-			if (KYOSHO_RX_dump)
-			{ // one packet per second, whatever its ID, to compare the real TX with what Kyosho_a7105.ino builds
-				KYOSHO_RX_dump = 0;
-				for(i = 0; i < KYOSHO_RX_TXPACKET_SIZE; i++)
-					debug(" %02X", packet[i]);
-				debugln("");
-			}
 			if (memcmp(&packet[1], rx_id, 4) == 0)
 			{
 				if (packet[0] == 0x58)
@@ -221,7 +214,6 @@ uint16_t KYOSHO_RX_callback()
 			pps_counter = 0;
 			KYOSHO_RX_raw = 0;
 			KYOSHO_RX_bad = 0;
-			KYOSHO_RX_dump = 1;
 		}
 
 		// frequency hopping
