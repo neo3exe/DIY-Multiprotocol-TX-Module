@@ -57,6 +57,7 @@ static void __attribute__((unused)) KYOSHO_RX_build_telemetry_packet()
 static uint8_t KYOSHO_RX_hop_trust;	// 0xFF once the hop index embedded by the TX has been validated
 static uint8_t KYOSHO_RX_missed;	// consecutive hops without a packet
 static uint8_t KYOSHO_RX_next_ch;	// channel to hop to at the next hop, 0xFF if not known
+static uint16_t KYOSHO_RX_bad;		// packets received per second with a CRC or FEC error
 
 static uint8_t __attribute__((unused)) KYOSHO_RX_data_ready()
 {
@@ -75,6 +76,7 @@ void KYOSHO_RX_init()
 	KYOSHO_RX_hop_trust = 0;
 	KYOSHO_RX_missed = 0;
 	KYOSHO_RX_next_ch = 0xFF;
+	KYOSHO_RX_bad = 0;
 	rx_data_started = false;
 	rx_disable_lna = IS_POWER_FLAG_on;
 	A7105_SetTxRxMode(rx_disable_lna ? TXRX_OFF : RX_EN);
@@ -98,7 +100,7 @@ uint16_t KYOSHO_RX_callback()
 {
 	static int8_t read_retry;
 	uint16_t temp;
-	uint8_t i;
+	uint8_t i, mode;
 
 #ifndef FORCE_KYOSHO_TUNING
 	A7105_AdjustLOBaseFreq(1);
@@ -146,7 +148,17 @@ uint16_t KYOSHO_RX_callback()
 		return 10000;
 
 	case KYOSHO_RX_DATA:
-		if (KYOSHO_RX_data_ready()) {
+		mode = A7105_ReadReg(A7105_00_MODE);
+		if (mode & 0x01)
+		{ // still armed and waiting for a packet, nothing to do
+		}
+		else if (mode & (1 << 5 | 1 << 6))
+		{ // a packet came in but failed CRC or FEC: the A7105 is now idle, re-arm it straight away
+		  // instead of staying deaf until the next hop
+			KYOSHO_RX_bad++;
+			A7105_Strobe(A7105_RX);
+		}
+		else {
 			A7105_ReadData(KYOSHO_RX_TXPACKET_SIZE);
 			if (memcmp(&packet[1], rx_id, 4) == 0)
 			{
@@ -197,9 +209,10 @@ uint16_t KYOSHO_RX_callback()
 		// packets per second
 		if (millis() - pps_timer >= 1000) {
 			pps_timer = millis();
-			debugln("%d pps, hop trust %d", pps_counter, KYOSHO_RX_hop_trust);
+			debugln("%d pps, %d bad, hop trust %d", pps_counter, KYOSHO_RX_bad, KYOSHO_RX_hop_trust);
 			RX_LQI = pps_counter / 2;
 			pps_counter = 0;
+			KYOSHO_RX_bad = 0;
 		}
 
 		// frequency hopping
